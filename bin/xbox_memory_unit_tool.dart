@@ -250,14 +250,14 @@ Future<void> handleLs(ArgResults results) async {
     final sizeStr = showSize ? " [${_formatSize(title.size)}]" : "";
     final timeStr = showTime ? " [${_formatTime(title.modifiedAt)}]" : "";
     print('Game: ${title.name} (${title.id})$sizeStr$timeStr');
-    
+
     for (final save in title.saves) {
       final sSizeStr = showSize ? " [${_formatSize(save.size)}]" : "";
       final sTimeStr = showTime ? " [${_formatTime(save.modifiedAt)}]" : "";
       print('  - Save: ${save.name} (${save.folderName})$sSizeStr$sTimeStr');
     }
   }
-  
+
   print('\nFree Space: ${_formatSize(mu.freeBytes)} / ${_formatSize(mu.totalBytes)}');
 }
 
@@ -329,7 +329,6 @@ Future<void> handleExport(ArgResults results) async {
     return;
   }
 
-  // Single export
   String zipPath;
   if (results.rest.length > 2) {
     zipPath = results.rest[2];
@@ -387,11 +386,9 @@ Future<void> handleExtractImage(ArgResults results) async {
     return;
   }
 
-  // Single extraction (Game or Save)
   print('Searching for $searchPath...');
-  
+
   if (searchPath.contains('/')) {
-    // Likely a save path "Game/Save"
     final parts = searchPath.split('/');
     final title = mu.findTitle(parts[0]);
     if (title == null) {
@@ -403,7 +400,7 @@ Future<void> handleExtractImage(ArgResults results) async {
       print('Error: Save "${parts[1]}" not found in ${title.name}.');
       return;
     }
-    
+
     final raw = save.saveImage;
     if (raw == null) {
       print('Error: SaveImage.xbx not found for this save.');
@@ -418,7 +415,6 @@ Future<void> handleExtractImage(ArgResults results) async {
     File(outPath).writeAsBytesSync(bmp);
     print('Extracted to $outPath');
   } else {
-    // Likely a game name or ID
     final title = mu.findTitle(searchPath);
     if (title == null) {
       print('Error: Game "$searchPath" not found.');
@@ -535,47 +531,34 @@ Future<void> handleRawImport(ArgResults results) async {
 
   final mu = await _loadMU(imagePath, writeAccess: true);
 
-  final host = File(hostPath);
-  if (!host.existsSync()) {
+  final type = FileSystemEntity.typeSync(hostPath);
+  if (type == FileSystemEntityType.notFound) {
     print('Error: host path does not exist: $hostPath');
     return;
   }
 
-  if (host.statSync().type == FileSystemEntityType.directory) {
+  if (type == FileSystemEntityType.directory) {
     if (!recursive) {
       print('Error: directory import requires -r');
       return;
     }
 
-    for (final entity in host.listSync()) {
+    final dir = Directory(hostPath);
+    for (final entity in dir.listSync(recursive: false)) {
       final entityName = entity.uri.pathSegments.isEmpty ? entity.path.split('/').last : entity.uri.pathSegments.last;
-      final target = '$memcardPath/$entityName';
+      final target = memcardPath.endsWith('/') ? '$memcardPath/$entityName'.replaceAll('//', '/') : '$memcardPath/$entityName';
       if (entity is File) {
-        mu.rawWriteFile(target, entity.readAsBytesSync());
+        mu.rawWriteFile(target, File(entity.path).readAsBytesSync());
       } else if (entity is Directory) {
-        final srcDir = Directory(entity.path);
-        _importDirectoryToCard(mu, srcDir, target);
+        mu.rawImportFromHost(entity.path, target, recursive: true);
       }
     }
   } else {
-    mu.rawWriteFile(memcardPath, host.readAsBytesSync());
+    mu.rawWriteFile(memcardPath, File(hostPath).readAsBytesSync());
   }
 
   mu.flush();
   print('Imported $hostPath -> $memcardPath');
-}
-
-void _importDirectoryToCard(XboxMemoryUnit mu, Directory dir, String targetPath) {
-  mu.rawMkdir(targetPath);
-  for (final entity in dir.listSync()) {
-    final finalName = entity.uri.pathSegments.isEmpty ? entity.path.split('/').last : entity.uri.pathSegments.last;
-    final childTarget = '$targetPath/$finalName';
-    if (entity is File) {
-      mu.rawWriteFile(childTarget, entity.readAsBytesSync());
-    } else if (entity is Directory) {
-      _importDirectoryToCard(mu, entity, childTarget);
-    }
-  }
 }
 
 Future<void> handleRawExport(ArgResults results) async {
@@ -608,19 +591,17 @@ Future<void> handleRawExport(ArgResults results) async {
       hostDir.createSync(recursive: true);
     }
 
-    for (final child in mu.rawLs(memcardPath)) {
+    final children = mu.rawLs(memcardPath);
+    for (final child in children) {
       final childPath = child.endsWith('/') ? child.substring(0, child.length - 1) : child;
-      final childMem = '${memcardPath.endsWith('/') ? memcardPath.substring(0, memcardPath.length - 1) : memcardPath}/$childPath';
+      final childMem = memcardPath.endsWith('/') ? '$memcardPath$childPath' : '$memcardPath/$childPath';
+      final childHost = hostPath.endsWith('/') ? '$hostPath$childPath' : '$hostPath/$childPath';
       final childEntry = mu.rawEntry(childMem);
       if (childEntry == null) continue;
       if (childEntry.isDirectory) {
-        final subDir = Directory('$hostPath/$childPath');
-        if (!subDir.existsSync()) {
-          subDir.createSync(recursive: true);
-        }
-        await handleRawExport(ArgResults(ArgParser()..addCommand('raw')..addCommand('export'), []));
+        mu.rawExportToHost(childMem, childHost, recursive: true);
       } else {
-        File('$hostPath/$childPath').writeAsBytesSync(mu.rawReadFile(childMem));
+        File(childHost).writeAsBytesSync(mu.rawReadFile(childMem));
       }
     }
     return;
