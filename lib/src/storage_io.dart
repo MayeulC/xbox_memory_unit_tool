@@ -11,9 +11,9 @@ class FileStorage implements FatxStorage {
 
   factory FileStorage.open(File file, {bool writeAccess = true}) {
     // FileMode.read is standard O_RDONLY.
-    // FileMode.append is O_RDWR | O_APPEND | O_CREAT. 
-    // Some block devices reject O_APPEND or O_CREAT.
-    final mode = writeAccess ? FileMode.append : FileMode.read;
+    // FileMode.append is O_RDWR | O_APPEND | O_CREAT.
+    // Some block devices reject O_APPEND or O_CREAT, so we use write for now
+    final mode = writeAccess ? FileMode.write : FileMode.read;
     final raf = file.openSync(mode: mode);
     try {
       final length = raf.lengthSync();
