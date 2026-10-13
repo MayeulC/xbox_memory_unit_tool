@@ -12,7 +12,15 @@ void main(List<String> arguments) async {
     ..addCommand('export')
     ..addCommand('rm')
     ..addCommand('format')
-    ..addCommand('extract-image');
+    ..addCommand('extract-image')
+    ..addCommand('raw', ArgParser()
+      ..addCommand('ls')
+      ..addCommand('mkdir')
+      ..addCommand('cp', ArgParser()..addFlag('recursive', abbr: 'r', negatable: false))
+      ..addCommand('import', ArgParser()..addFlag('recursive', abbr: 'r', negatable: false))
+      ..addCommand('export', ArgParser()..addFlag('recursive', abbr: 'r', negatable: false))
+      ..addCommand('rm', ArgParser()..addFlag('recursive', abbr: 'r', negatable: false))
+      ..addCommand('mv'));
 
   ArgResults results;
   try {
@@ -47,6 +55,9 @@ void main(List<String> arguments) async {
         break;
       case 'extract-image':
         await handleExtractImage(command);
+        break;
+      case 'raw':
+        await handleRaw(command);
         break;
       default:
         printUsage(parser);
@@ -120,6 +131,15 @@ void printUsage(ArgParser parser) {
   print('  extract-image <image_path> <path> [out]   Extract and convert .xbx icon(s) to .bmp');
   print('                                            <path> can be "all", a game name, or "game/save"');
   print('');
+  print('Raw (low-level) commands:');
+  print('  raw ls <image_path> [memcard_path]                 List raw directory entries (default /)');
+  print('  raw mkdir <image_path> <memcard_path>              Create a directory on the card');
+  print('  raw import [-r] <image_path> <host_path> <memcard_path>  Import host -> card');
+  print('  raw export [-r] <image_path> <memcard_path> <host_path>  Export card -> host');
+  print('  raw cp [-r] <image_path> <src_memcard_path> <dst_memcard_path>  Copy within card');
+  print('  raw mv <image_path> <src_memcard_path> <dst_memcard_path>       Move/rename within card');
+  print('  raw rm [-r] <image_path> <memcard_path>           Delete file or directory on card');
+  print('');
   print('Options for "ls":');
   print('  -s, --size                           Show sizes');
   print('  -t, --time                           Show modification times');
@@ -129,6 +149,14 @@ void printUsage(ArgParser parser) {
   print('Examples:');
   print('  xbmut ls card.bin                    List all games and saves');
   print('  xbmut ls card.bin --size --time      List with detailed info');
+  print('');
+  print('  xbmut raw ls card.bin /UDATA         List raw UDATA directory');
+  print('  xbmut raw mkdir card.bin /UDATA/MyGame');
+  print('  xbmut raw import -r card.bin ./mydir /UDATA/mydir');
+  print('  xbmut raw export card.bin /UDATA/save.bin ./save.bin');
+  print('  xbmut raw cp card.bin /UDATA/a.bin /UDATA/b.bin');
+  print('  xbmut raw mv card.bin /UDATA/a.bin /UDATA/c.bin');
+  print('  xbmut raw rm -r card.bin /UDATA/OldGame');
   printc('  --   Linux-only-start ---', "bright_cyan");
   print('  lsblk                                        Locate plugged-in memcard/FATX usb (sdc, sdd ...)');
   print('  sudo dd if=/dev/sdc of=mu_backup.bin bs=1M   Dump the card');
@@ -410,4 +438,229 @@ Future<void> handleExtractImage(ArgResults results) async {
     File(outPath).writeAsBytesSync(bmp);
     print('Extracted to $outPath');
   }
+}
+
+Future<void> handleRaw(ArgResults command) async {
+  final sub = command.command;
+  if (sub == null) {
+    print('Usage: xbmut raw <ls|mkdir|cp|import|export|rm|mv> ...');
+    return;
+  }
+
+  switch (sub.name) {
+    case 'ls':
+      await handleRawLs(sub);
+      break;
+    case 'mkdir':
+      await handleRawMkdir(sub);
+      break;
+    case 'cp':
+      await handleRawCp(sub);
+      break;
+    case 'import':
+      await handleRawImport(sub);
+      break;
+    case 'export':
+      await handleRawExport(sub);
+      break;
+    case 'rm':
+      await handleRawRm(sub);
+      break;
+    case 'mv':
+      await handleRawMv(sub);
+      break;
+    default:
+      print('Unknown raw subcommand: ${sub.name}');
+  }
+}
+
+Future<void> handleRawLs(ArgResults results) async {
+  if (results.rest.isEmpty || results.rest.length > 2) {
+    print('Usage: xbmut raw ls <image_path> [memcard_path]');
+    return;
+  }
+
+  final imagePath = results.rest[0];
+  final memcardPath = results.rest.length == 2 ? results.rest[1] : '/';
+  final mu = await _loadMU(imagePath, writeAccess: false);
+
+  final entries = mu.rawLs(memcardPath);
+  for (final entry in entries) {
+    print(entry);
+  }
+}
+
+Future<void> handleRawMkdir(ArgResults results) async {
+  if (results.rest.length != 2) {
+    print('Usage: xbmut raw mkdir <image_path> <memcard_path>');
+    return;
+  }
+
+  final imagePath = results.rest[0];
+  final memcardPath = results.rest[1];
+  final mu = await _loadMU(imagePath, writeAccess: true);
+
+  mu.rawMkdir(memcardPath);
+  mu.flush();
+  print('Created $memcardPath');
+}
+
+Future<void> handleRawCp(ArgResults results) async {
+  if (results.rest.length != 3) {
+    print('Usage: xbmut raw cp [-r] <image_path> <src_memcard_path> <dst_memcard_path>');
+    return;
+  }
+
+  final imagePath = results.rest[0];
+  final src = results.rest[1];
+  final dst = results.rest[2];
+  final recursive = results['recursive'] as bool;
+
+  final mu = await _loadMU(imagePath, writeAccess: true);
+  mu.rawCpWithinCard(src, dst, recursive: recursive);
+  mu.flush();
+  print('Copied $src -> $dst');
+}
+
+Future<void> handleRawImport(ArgResults results) async {
+  if (results.rest.length != 3) {
+    print('Usage: xbmut raw import [-r] <image_path> <host_path> <memcard_path>');
+    return;
+  }
+
+  final imagePath = results.rest[0];
+  final hostPath = results.rest[1];
+  final memcardPath = results.rest[2];
+  final recursive = results['recursive'] as bool;
+
+  final mu = await _loadMU(imagePath, writeAccess: true);
+
+  final host = File(hostPath);
+  if (!host.existsSync()) {
+    print('Error: host path does not exist: $hostPath');
+    return;
+  }
+
+  if (host.statSync().type == FileSystemEntityType.directory) {
+    if (!recursive) {
+      print('Error: directory import requires -r');
+      return;
+    }
+
+    for (final entity in host.listSync()) {
+      final entityName = entity.uri.pathSegments.isEmpty ? entity.path.split('/').last : entity.uri.pathSegments.last;
+      final target = '$memcardPath/$entityName';
+      if (entity is File) {
+        mu.rawWriteFile(target, entity.readAsBytesSync());
+      } else if (entity is Directory) {
+        final srcDir = Directory(entity.path);
+        _importDirectoryToCard(mu, srcDir, target);
+      }
+    }
+  } else {
+    mu.rawWriteFile(memcardPath, host.readAsBytesSync());
+  }
+
+  mu.flush();
+  print('Imported $hostPath -> $memcardPath');
+}
+
+void _importDirectoryToCard(XboxMemoryUnit mu, Directory dir, String targetPath) {
+  mu.rawMkdir(targetPath);
+  for (final entity in dir.listSync()) {
+    final finalName = entity.uri.pathSegments.isEmpty ? entity.path.split('/').last : entity.uri.pathSegments.last;
+    final childTarget = '$targetPath/$finalName';
+    if (entity is File) {
+      mu.rawWriteFile(childTarget, entity.readAsBytesSync());
+    } else if (entity is Directory) {
+      _importDirectoryToCard(mu, entity, childTarget);
+    }
+  }
+}
+
+Future<void> handleRawExport(ArgResults results) async {
+  if (results.rest.length != 3) {
+    print('Usage: xbmut raw export [-r] <image_path> <memcard_path> <host_path>');
+    return;
+  }
+
+  final imagePath = results.rest[0];
+  final memcardPath = results.rest[1];
+  final hostPath = results.rest[2];
+  final recursive = results['recursive'] as bool;
+
+  final mu = await _loadMU(imagePath, writeAccess: false);
+
+  final entry = mu.rawEntry(memcardPath);
+  if (entry == null) {
+    print('Error: path not found: $memcardPath');
+    return;
+  }
+
+  if (entry.isDirectory) {
+    if (!recursive) {
+      print('Error: directory export requires -r');
+      return;
+    }
+
+    final hostDir = Directory(hostPath);
+    if (!hostDir.existsSync()) {
+      hostDir.createSync(recursive: true);
+    }
+
+    for (final child in mu.rawLs(memcardPath)) {
+      final childPath = child.endsWith('/') ? child.substring(0, child.length - 1) : child;
+      final childMem = '${memcardPath.endsWith('/') ? memcardPath.substring(0, memcardPath.length - 1) : memcardPath}/$childPath';
+      final childEntry = mu.rawEntry(childMem);
+      if (childEntry == null) continue;
+      if (childEntry.isDirectory) {
+        final subDir = Directory('$hostPath/$childPath');
+        if (!subDir.existsSync()) {
+          subDir.createSync(recursive: true);
+        }
+        await handleRawExport(ArgResults(ArgParser()..addCommand('raw')..addCommand('export'), []));
+      } else {
+        File('$hostPath/$childPath').writeAsBytesSync(mu.rawReadFile(childMem));
+      }
+    }
+    return;
+  }
+
+  final hostFile = File(hostPath);
+  final parent = hostFile.parent;
+  if (!parent.existsSync()) parent.createSync(recursive: true);
+  hostFile.writeAsBytesSync(mu.rawReadFile(memcardPath));
+  print('Exported $memcardPath -> $hostPath');
+}
+
+Future<void> handleRawRm(ArgResults results) async {
+  if (results.rest.length != 2) {
+    print('Usage: xbmut raw rm [-r] <image_path> <memcard_path>');
+    return;
+  }
+
+  final imagePath = results.rest[0];
+  final memcardPath = results.rest[1];
+  final recursive = results['recursive'] as bool;
+
+  final mu = await _loadMU(imagePath, writeAccess: true);
+  mu.rawRm(memcardPath, recursive: recursive);
+  mu.flush();
+  print('Removed $memcardPath');
+}
+
+Future<void> handleRawMv(ArgResults results) async {
+  if (results.rest.length != 3) {
+    print('Usage: xbmut raw mv <image_path> <src_memcard_path> <dst_memcard_path>');
+    return;
+  }
+
+  final imagePath = results.rest[0];
+  final src = results.rest[1];
+  final dst = results.rest[2];
+
+  final mu = await _loadMU(imagePath, writeAccess: true);
+  mu.rawMv(src, dst);
+  mu.flush();
+  print('Moved $src -> $dst');
 }
